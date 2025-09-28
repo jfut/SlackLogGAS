@@ -40,7 +40,7 @@ function FindOrCreateSpreadsheet(folder, fileName)
 }
 
 // Slack 上にアップロードされたデータをダウンロード
-function　DownloadData(url, folder, savefilePrefix)
+function DownloadData(url, folder, savefilePrefix)
 {
   var options = {
     "headers": {'Authorization': 'Bearer '+ API_TOKEN}
@@ -88,14 +88,25 @@ var SlackAccessor = (function() {
   // API リクエスト
   p.requestAPI = function (path, params) {
     if (params === void 0) { params = {}; }
-    var url = "https://slack.com/api/" + path + "?";
-    var qparams = [("token=" + encodeURIComponent(this.APIToken))];
+    var url = "https://slack.com/api/" + path;
+    var qparams = [];
     for (var k in params) {
       qparams.push(encodeURIComponent(k) + "=" + encodeURIComponent(params[k]));
     }
-    url += qparams.join('&');
+    if (qparams.length > 0) {
+      url += "?" + qparams.join("&");
+    }
 
-    var response = UrlFetchApp.fetch(url);
+    // Authorization: Bearer ヘッダーを追加
+    var options = {
+      method: "get",
+      headers: {
+        "Authorization": "Bearer " + this.APIToken
+      },
+      muteHttpExceptions: true
+    };
+
+    var response = UrlFetchApp.fetch(url, options);
     var data = JSON.parse(response.getContentText());
     if (data.error) {
       throw "GET " + path + ": " + data.error;
@@ -259,21 +270,36 @@ var SpreadsheetController = (function() {
       // Slack テキスト整形
       row[COL_TEXT - 1] = UnescapeMessageText(msg.text, memberList);
       // アップロードファイル URL とダウンロード先 Drive の Viewer リンク
-      var url = "";
-      var alternateLink = "";
-      if(msg.upload == true) {
-        url = msg.files[0].url_private_download;
-        if (url === void 0) {
-          alternateLink = "(This file was deleted.)"
-        } else {
-          // ダウンロードとダウンロード先
-          var file = DownloadData(url, downloadFolder, date);
-          var driveFile = Drive.Files.get(file.getId());
-          alternateLink = driveFile.alternateLink;
-        }
+      var urls = [];
+      var alternateLinks = [];
+      var files = [];
+      if (msg.files && msg.files.length > 0) {
+        files = msg.files;
+      } else if (msg.file) {
+        files = [msg.file];
       }
-      row[COL_URL - 1] = url;
-      row[COL_LINK - 1] = alternateLink;
+
+      files.forEach(function (fileInfo, index) {
+        var downloadUrl = fileInfo.url_private_download || fileInfo.url_private;
+        if (!downloadUrl) {
+          urls.push("");
+          alternateLinks.push("(This file was deleted.)");
+          return;
+        }
+
+        urls.push(downloadUrl);
+        var file = DownloadData(downloadUrl, downloadFolder, date + "_" + (index + 1));
+        var driveFile = Drive.Files.get(file.getId());
+        alternateLinks.push(driveFile.alternateLink);
+      });
+
+      if (urls.length === 0) {
+        row[COL_URL - 1] = "";
+        row[COL_LINK - 1] = "";
+      } else {
+        row[COL_URL - 1] = urls.join("\n");
+        row[COL_LINK - 1] = alternateLinks.join("\n");
+      }
       row[COL_TIME - 1] = msg.ts;
       // メッセージの JSON 形式
       row[COL_JSON - 1] = JSON.stringify(msg);
